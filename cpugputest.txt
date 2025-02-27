@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU vs CPU Matrix Multiplication</title>
+    <script src="../node_modules/@tensorflow/tfjs/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gpu.js@latest"></script>
+    <style>
+        #container {
+            margin: 20px;
+        }
+        .result {
+            margin-top: 20px;
+        }
+        .status {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <label for="matrixSize">Matrix Size:</label>
+        <input type="number" id="matrixSize" name="matrixSize" value="10">
+        <label for="numMatrices">Number of Matrices:</label>
+        <input type="number" id="numMatrices" name="numMatrices" value="10000">
+        <label for="repetitions">Tekrar Sayısı:</label>
+        <input type="number" id="repetitions" name="repetitions" value="1">
+        <label for="numCores">CPU Core Sayısı:</label>
+        <input type="number" id="numCores" name="numCores" value="1">
+        <button onclick="startBoth()">Start Both</button>
+        <button onclick="startCpuComputation()">Start CPU</button>
+        <button onclick="startGpuComputation()">Start GPU</button>
+        <div class="result" id="cpuTime"></div>
+        <div class="result" id="gpuTime"></div>
+        <div class="result" id="cpuInfo"></div>
+        <div class="result" id="gpuInfo"></div>
+        <div class="result" id="cpuTotal"></div>
+        <div class="result" id="gpuTotal"></div>
+        <div class="status" id="status">Boşta</div>
+    </div>
+    <script>
+        function generateRandomMatrix(size) {
+            const matrix = [];
+            for (let i = 0; i < size; i++) {
+                const row = [];
+                for (let j = 0; j < size; j++) {
+                    row.push(Math.random());
+                }
+                matrix.push(row);
+            }
+            return matrix;
+        }
+
+        function multiplyMatricesCPU(a, b) {
+            const size = a.length;
+            const result = [];
+            for (let i = 0; i < size; i++) {
+                result[i] = [];
+                for (let j = 0; j < size; j++) {
+                    let sum = 0;
+                    for (let k = 0; k < size; k++) {
+                        sum += a[i][k] * b[k][j];
+                    }
+                    result[i][j] = sum;
+                }
+            }
+            multiplyMatricesCPU.totalMultiplications += 1;
+            return result;
+        }
+        multiplyMatricesCPU.totalMultiplications = 0;
+
+        async function multiplyMatricesGPU(matrices) {
+            const gpu = new GPU.GPU();
+            const multiplyMatrix = gpu.createKernel(function(a, b) {
+                let sum = 0;
+                for (let i = 0; i < this.constants.size; i++) {
+                    sum += a[this.thread.y][i] * b[i][this.thread.x];
+                }
+                return sum;
+            }).setOutput([matrices[0].length, matrices[0].length])
+              .setConstants({ size: matrices[0].length });
+
+            const batchSize = 100; // Process matrices in batches of 100
+            for (let i = 0; i < matrices.length; i += batchSize) {
+                const batch = matrices.slice(i, i + batchSize);
+                const results = batch.map(matrix => multiplyMatrix(matrix, matrix));
+                await Promise.all(results);
+            }
+        }
+
+        async function startBoth() {
+            await startCpuComputation();
+            await startGpuComputation();
+        }
+
+        async function startCpuComputation() {
+            document.getElementById('status').innerText = 'CPU İşlem Yapılıyor';
+
+            const matrixSize = parseInt(document.getElementById('matrixSize').value);
+            const numMatrices = parseInt(document.getElementById('numMatrices').value);
+            const repetitions = parseInt(document.getElementById('repetitions').value);
+            const numCores = parseInt(document.getElementById('numCores').value);
+
+            const matrices = [];
+            for (let i = 0; i < numMatrices; i++) {
+                matrices.push(generateRandomMatrix(matrixSize));
+            }
+
+            multiplyMatricesCPU.totalMultiplications = 0;
+            let startTime = performance.now();
+            let cpuTotalMultiplications;
+            if (numCores === 1) {
+                cpuTotalMultiplications = runSingleCoreCpuComputation(matrices, repetitions);
+            } else {
+                cpuTotalMultiplications = await runMultiCoreCpuComputation(matrices, repetitions, numCores);
+            }
+            let endTime = performance.now();
+            document.getElementById('cpuTime').innerText = `CPU Time: ${(endTime - startTime).toFixed(2)} ms`;
+            document.getElementById('cpuTotal').innerText = `CPU Total Multiplications: ${cpuTotalMultiplications}`;
+            document.getElementById('cpuInfo').innerText = `CPU: ${navigator.hardwareConcurrency} cores`;
+
+            document.getElementById('status').innerText = 'Boşta';
+        }
+
+        async function startGpuComputation() {
+            
+            document.getElementById('status').innerText = 'GPU İşlem Yapılıyor';
+
+            const matrixSize = parseInt(document.getElementById('matrixSize').value);
+            const numMatrices = parseInt(document.getElementById('numMatrices').value);
+            const repetitions = parseInt(document.getElementById('repetitions').value);
+            
+            const gpu = new GPU.GPU();
+            const matMul = gpu.createKernel(function(a, b) {
+                let sum = 0;
+                for (let i = 0; i < this.constants.size; i++) {
+                    sum += a[this.thread.z][this.thread.y][i] * b[this.thread.z][i][this.thread.x];
+                }
+                return sum;
+            }).setOutput([matrixSize, matrixSize, numMatrices])
+              .setConstants({ size: matrixSize});
+            const matrixA=Array.from({length: numMatrices}, () => Array.from({length: matrixSize}, () => Array.from({length: matrixSize}, () => Math.random())));
+            const matrixB=Array.from({length: numMatrices}, () => Array.from({length: matrixSize}, () => Array.from({length: matrixSize}, () => Math.random())));
+            let startTime = performance.now();
+            result = matMul(matrixA, matrixB);
+            for (let rep = 1; rep < repetitions; rep++) {
+                const result = matMul(matrixA, matrixB);
+            }
+            console.table(result.map(row => row.map(cell => cell[0])));
+            
+            /*
+            const matrices = [];
+            for (let i = 0; i < numMatrices; i++) {
+                matrices.push(generateRandomMatrix(matrixSize));
+            }
+
+            let startTime = performance.now();
+            for (let rep = 0; rep < repetitions; rep++) {
+                await multiplyMatricesGPU(matrices);
+            }*/
+            let endTime = performance.now();
+            const gpuTotal = numMatrices * repetitions;
+            document.getElementById('gpuTime').innerText = `GPU Time: ${(endTime - startTime).toFixed(2)} ms`;
+            document.getElementById('gpuTotal').innerText = `GPU Total Multiplications: ${gpuTotal}`;
+            const gpuInfo = tf.backend().getGPGPUContext().gl.getParameter(tf.backend().getGPGPUContext().gl.RENDERER);
+            document.getElementById('gpuInfo').innerText = `GPU: ${gpuInfo}`;
+
+            document.getElementById('status').innerText = 'Boşta';
+        }
+
+        function runSingleCoreCpuComputation(matrices, repetitions) {
+            for (let rep = 0; rep < repetitions; rep++) {
+                for (let i = 0; i < matrices.length; i++) {
+                    multiplyMatricesCPU(matrices[i], matrices[i]);
+                }
+            }
+            return multiplyMatricesCPU.totalMultiplications;
+        }
+
+        async function runMultiCoreCpuComputation(matrices, repetitions, numCores) {
+            const workers = [];
+            const chunkSize = Math.ceil(matrices.length / numCores);
+            let totalMultiplications = 0;
+
+            for (let i = 0; i < numCores; i++) {
+                const worker = new Worker(URL.createObjectURL(new Blob([`
+                    onmessage = function(e) {
+                        const { matrices, repetitions } = e.data;
+                        let localMultiplications = 0;
+                        for (let rep = 0; rep < repetitions; rep++) {
+                            for (let i = 0; i < matrices.length; i++) {
+                                multiplyMatricesCPU(matrices[i], matrices[i]);
+                                localMultiplications += 1;
+                            }
+                        }
+                        postMessage(localMultiplications);
+                    }
+                    function multiplyMatricesCPU(a, b) {
+                        const size = a.length;
+                        const result = [];
+                        for (let i = 0; i < size; i++) {
+                            result[i] = [];
+                            for (let j = 0; j < size; j++) {
+                                let sum = 0;
+                                for (let k = 0; k < size; k++) {
+                                    sum += a[i][k] * b[k][j];
+                                }
+                                result[i][j] = sum;
+                            }
+                        }
+                        return result;
+                    }
+                `], { type: 'application/javascript' })));
+
+                const chunk = matrices.slice(i * chunkSize, (i + 1) * chunkSize);
+                worker.postMessage({ matrices: chunk, repetitions });
+                workers.push(new Promise(resolve => {
+                    worker.onmessage = (e) => {
+                        totalMultiplications += e.data;
+                        resolve();
+                    };
+                }));
+            }
+
+            await Promise.all(workers);
+            return totalMultiplications;
+        }
+    </script>
+</body>
+</html>
